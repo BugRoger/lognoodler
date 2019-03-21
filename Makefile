@@ -23,7 +23,7 @@ build: Dockerfile
 	docker run --rm -v $(PWD):/src -v $(PWD)/.cache:/root/.cache -w /src $(IMAGE)-cache make binaries
 
 dev: build 
-	while true; do while read line; do echo $$line; sleep 0.1; done < test.txt; done | bin/darwin/amd64/$(BINARY)
+	while true; do while IFS= read -r line; do printf '%s\n' "$$line"; sleep 0.1; done < test.txt; done | bin/darwin/amd64/$(BINARY)
 
 clean:
 	rm -rf bin/*
