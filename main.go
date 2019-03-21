@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +19,12 @@ import (
 	"github.com/oklog/run"
 )
 
+const (
+	writeWait      = 10 * time.Second
+	pingPeriod     = 60 * time.Second
+	maxMessageSize = 8092
+)
+
 var (
 	addr = flag.String("addr", "0.0.0.0:8080", "http service address")
 
@@ -27,23 +34,10 @@ var (
 	}
 
 	upgrader = websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
+		ReadBufferSize:  maxMessageSize,
+		WriteBufferSize: maxMessageSize,
+		CheckOrigin:     func(r *http.Request) bool { return true },
 	}
-)
-
-const (
-	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
-
-	// Time allowed to read the next pong message from the peer.
-	pongWait = 60 * time.Second
-
-	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = (pongWait * 9) / 10
-
-	// Maximum message size allowed from peer.
-	maxMessageSize = 512
 )
 
 func serveHome(w http.ResponseWriter, r *http.Request) {
@@ -71,9 +65,9 @@ func serveWebsocket(w http.ResponseWriter, r *http.Request) {
 	go client.pump()
 }
 
-func transcode() error {
-	decoder := logfmt.NewDecoder(os.Stdin)
-	encoder := kitlog.NewJSONLogger(kitlog.NewSyncWriter(multiplexer))
+func transcode(in io.Reader, out io.Writer) error {
+	decoder := logfmt.NewDecoder(in)
+	encoder := kitlog.NewJSONLogger(kitlog.NewSyncWriter(out))
 
 	for decoder.ScanRecord() {
 		var kvs []interface{}
@@ -101,29 +95,28 @@ func interrupt(cancel chan struct{}) error {
 }
 
 func main() {
-	// info, err := os.Stdin.Stat()
-	// if err != nil {
-	// 	panic(err)
-	// }
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		panic(err)
+	}
 
-	// if info.Mode()&os.ModeCharDevice != 0 || info.Size() <= 0 {
-	// 	fmt.Println("Slurpily is intended to work with pipes.")
-	// 	fmt.Println("Usage: echo \"log=Hello\" | slurpily")
-	// 	return
-	// }
+	if info.Mode()&os.ModeCharDevice != 0 || info.Size() <= 0 {
+		fmt.Println("Lognoodler is intended to work with pipes.")
+		fmt.Println("Usage: echo \"log=Hello\" | lognoodler")
+		return
+	}
 
 	var g run.Group
+	cancel := make(chan struct{})
 	server := http.Server{Addr: *addr}
 
 	http.HandleFunc("/", serveHome)
 	http.HandleFunc("/ws", serveWebsocket)
 
-	cancel := make(chan struct{})
-
-	g.Add(transcode, func(error) {})
+	g.Add(func() error { return transcode(os.Stdin, multiplexer) }, func(error) {})
 	g.Add(func() error { return multiplexer.run(cancel) }, func(error) {})
 	g.Add(func() error { return interrupt(cancel) }, func(err error) { close(cancel) })
-	g.Add(server.ListenAndServe, func(error) { server.Close() })
+	g.Add(func() error { return server.ListenAndServe() }, func(error) { server.Close() })
 
 	if err := g.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)

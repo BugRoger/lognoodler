@@ -1,4 +1,4 @@
-module github.com/bugroger/slurpily
+module github.com/bugroger/lognoodler
 
 require (
 	github.com/go-kit/kit v0.8.0
